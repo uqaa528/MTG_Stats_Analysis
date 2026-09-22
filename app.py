@@ -130,7 +130,7 @@ else:
 # ---------------------------------------------------------------------------
 # Score / measure over time chart
 # ---------------------------------------------------------------------------
-st.header("📈 Measure over time")
+st.header(f"📈 {MEASURE_LABELS[measure]} over time")
 
 history = da.get_stats_history(conn, date_from=str(date_from), date_to=str(date_to))
 
