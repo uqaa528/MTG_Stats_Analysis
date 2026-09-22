@@ -1,0 +1,23 @@
+# Raw tournament screenshots and extracted CSV data (large/binary, not
+# source). The folders themselves ARE tracked (via .gitkeep) so the repo
+# structure is visible, but their contents are not.
+data/screenshots/*
+!data/screenshots/.gitkeep
+data/tournament_data/*
+!data/tournament_data/.gitkeep
+
+# Name mapping contains real participant names (PII) - keep out of git.
+# The .example.json template IS tracked so the format is documented.
+data/name_mapping.json
+
+# SQLite database
+mtg_stats.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# macOS
+.DS_Store

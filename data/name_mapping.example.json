@@ -1,0 +1,6 @@
+{
+  "_comment": "Example/template for data/name_mapping.json (which is git-ignored since it contains real participant names). Copy this file to data/name_mapping.json and fill in your own raw-OCR-string -> canonical-name entries. Keys are the EXACT raw name strings found in your CSVs (see `python -m src.ocr.analyze_names` to discover them); values are the confirmed correct name.",
+  "Jon Smth": "Jon Smith",
+  "J. Smith": "Jon Smith",
+  "Jane D": "Jane Doe"
+}
