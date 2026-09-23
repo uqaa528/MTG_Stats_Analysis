@@ -304,29 +304,34 @@ Defined in `src/scoring.py`, shown live in the app's explanation panel:
 
 ```
 Score =
-    40 * (TOP1 %-adj / 100)
-  + 20 * (TOP4 %-adj / 100)
-  + 15 * (BelowTOP1 %-adj / 100)
-  +  5 * TOP1 count
-  +  3 * TOP4 count
-  +  2 * BelowTOP1 count
-  + 10 * Win rate-adj (0-1)
+    confT * (
+        40 * (TOP1 %-adj / 100)
+      + 20 * (TOP4 %-adj / 100)
+      + 15 * (BelowTOP1 %-adj / 100)
+      +  5 * TOP1 count-weighted
+      +  3 * TOP4 count-weighted
+      +  2 * BelowTOP1 count-weighted
+    )
+  + confM * 10 * Win rate-adj (0-1)
   + 0.5 * Tournaments played
 ```
 
-Percentages carry the most weight, raw counts add a smaller boost, win rate
-contributes moderately, and simply attending more tournaments contributes
-very little on its own — as requested.
+Percentages carry the most weight, round-weighted counts add a smaller
+boost, win rate contributes moderately, and simply attending more
+tournaments contributes very little on its own — as requested.
 
 ### Preventing "one-hit-wonders" from dominating the leaderboard
 
 Raw percentages are unreliable with a small sample: a player with **1**
 tournament and **1** win has a "perfect" 100% TOP1 rate, which would
 otherwise score almost as well as a player with 10 tournaments and 5 wins
-(50%) — rewarding luck over consistency.
+(50%) — rewarding luck over consistency. Raw counts have a similar problem:
+a flat "+5 points per TOP1 finish" doesn't care whether that TOP1 came from
+1 tournament or 20, or from a short 2-round tournament vs. a grueling
+4-round one.
 
-To fix this, every `%-adj` value above is **Bayesian-shrunk** towards the
-league-wide average rate before being used in the Score:
+**Step 1 — Bayesian shrinkage.** Every `%-adj` value above is shrunk towards
+the league-wide average rate before being used in the Score:
 
 ```
 adjusted_rate = (count + K * league_average_rate) / (n + K)
@@ -335,10 +340,63 @@ adjusted_rate = (count + K * league_average_rate) / (n + K)
 where `K` is a number of "phantom average tournaments" assumed as a prior
 (`K=4` for TOP1/TOP4/BelowTOP1 %, `K=10` "phantom matches" for win rate,
 configurable in `src/scoring.py`). With a small sample (`n` small), the
-result is pulled strongly toward the league average — so a single lucky win
-can't inflate the score. As a player accumulates more tournaments (`n >>
-K`), the adjusted rate converges to their true raw rate, rewarding proven,
-repeated consistency.
+result is pulled strongly toward the league average. As a player
+accumulates more tournaments (`n >> K`), the adjusted rate converges to
+their true raw rate, rewarding proven, repeated consistency.
+
+**Step 2 — round-weighted counts.** Not all tournaments are equally hard to
+win: a 4-round Swiss event is a much sterner test than a quick 2-round one,
+so a TOP1 finish in the former should count for more. Raw counts are
+replaced by round-weighted counts — each TOP1/TOP4/BelowTOP1 result
+contributes:
+
+```
+result_weight = rounds_in_that_tournament / ROUND_REFERENCE
+```
+
+(`ROUND_REFERENCE = 4`, configurable in `src/scoring.py`). A result from a
+4-round tournament contributes a full `1.0x`; a 2-round tournament only
+`0.5x`; a 6-round tournament `1.5x`. Rounds are estimated per tournament
+from the max `wins + losses + draws` any single participant played.
+
+**Step 3 — logarithmic, capped confidence.** Shrinkage alone isn't quite
+enough: if the league-wide average itself is generous (e.g. many
+tournaments here have only a handful of players, so "finishing in the top
+4" is easy in a small field), a brand-new player who has proven *nothing*
+yet — say, lost every match of their only tournament — would still get
+shrunk towards that generous average and end up with a deceptively decent
+score, as if they were "probably about average" on credit alone.
+
+To fix this, every rate-derived component (the 3 percentages, the 3
+round-weighted counts, and win rate) is additionally scaled by a
+**confidence factor** that grows **logarithmically** with tournaments/matches
+played and **caps out at 1.0** once a player reaches a fixed fraction of a
+"full season" worth of tournaments/matches:
+
+```
+threshold = CONFIDENCE_CAP_FRACTION * CONFIDENCE_REFERENCE_TOURNAMENTS
+confT = min(1, log(1 + tournaments_played) / log(1 + threshold))
+
+threshold_m = CONFIDENCE_CAP_FRACTION * CONFIDENCE_REFERENCE_MATCHES
+confM = min(1, log(1 + total_matches) / log(1 + threshold_m))
+```
+
+With `CONFIDENCE_CAP_FRACTION = 0.7`, `CONFIDENCE_REFERENCE_TOURNAMENTS =
+20`, and `CONFIDENCE_REFERENCE_MATCHES = 60` (all configurable in
+`src/scoring.py`), a player who has played **14+ tournaments** (or **42+
+matches**) gets full (`1.0x`) confidence. Below that, the logarithm means
+confidence rises quickly at first — so a genuinely solid sample (e.g. 13
+tournaments) still earns strong, close-to-1.0x credit — and only flattens
+out as it approaches the cap.
+
+Crucially, the reference is a **fixed** number, not the league's
+ever-growing total tournament count. This means a player with a genuinely
+strong, well-established sample is never penalized just because some other
+player has attended even *more* tournaments — only the player's own raw
+sample size matters, not their sample size *relative to* whoever has played
+the most. For example, a player with 13 tournaments and a strong 71% win
+rate correctly out-scores a player with 27 tournaments but only a 49% win
+rate — volume of attendance alone doesn't win over genuine performance.
 
 Raw (unadjusted) percentages are still shown in the leaderboard for
 transparency — check the "Show score-adjusted (shrunk) % columns" checkbox
@@ -351,12 +409,22 @@ data access and the UI:
 
 - **`src/scoring.py`** — the Score weights (`WEIGHTS` dict), the shrinkage
   strength constants (`SHRINKAGE_K_TOURNAMENTS`, `SHRINKAGE_K_MATCHES`), the
-  `shrink_rate()` helper, and `compute_score()`. Edit this file to:
+  confidence constants (`CONFIDENCE_CAP_FRACTION`,
+  `CONFIDENCE_REFERENCE_TOURNAMENTS`, `CONFIDENCE_REFERENCE_MATCHES`), the
+  round-weighting constant (`ROUND_REFERENCE`), the `shrink_rate()` /
+  `confidence_factor()` / `round_difficulty_weight()` helpers, and
+  `compute_score()`. Edit this file to:
   - change how much each measure contributes to Score (adjust `WEIGHTS`),
   - change how aggressively small samples get shrunk towards the league
-    average (adjust the `SHRINKAGE_K_*` constants — higher = more
-    skepticism towards players with few tournaments/matches),
+    average (adjust the `SHRINKAGE_K_*` constants),
+  - change how many tournaments/matches count as "a full season" for
+    confidence purposes, or how large a fraction of it is needed for full
+    (1.0x) credit (adjust `CONFIDENCE_REFERENCE_*` / `CONFIDENCE_CAP_FRACTION`),
+  - change how much a tournament's round count affects its result weight
+    (adjust `ROUND_REFERENCE` — a tournament with this many rounds
+    contributes a full `1.0x` per result),
   - change the Score formula itself (edit `compute_score()`).
+
   `FORMULA_TEXT` in this file is auto-generated from `WEIGHTS` and is what's
   displayed in the app's explanation panel, so it stays in sync
   automatically — no need to update it by hand.

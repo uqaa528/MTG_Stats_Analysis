@@ -23,8 +23,12 @@ import pandas as pd
 from .scoring import (
     compute_score,
     shrink_rate,
+    confidence_factor,
+    round_difficulty_weight,
     SHRINKAGE_K_TOURNAMENTS,
     SHRINKAGE_K_MATCHES,
+    CONFIDENCE_REFERENCE_TOURNAMENTS,
+    CONFIDENCE_REFERENCE_MATCHES,
 )
 
 
@@ -44,6 +48,7 @@ def compute_core_stats(tournaments_df: pd.DataFrame, results_df: pd.DataFrame) -
     subset = results_df[results_df["tournament_id"].isin(tournament_ids)]
 
     players: dict = {}
+    tournament_rounds: dict = {}
 
     def ensure(name: str) -> dict:
         if name not in players:
@@ -52,6 +57,9 @@ def compute_core_stats(tournaments_df: pd.DataFrame, results_df: pd.DataFrame) -
                 "top1_count": 0,
                 "top4_count": 0,
                 "below_top1_count": 0,
+                "top1_count_weighted": 0.0,
+                "top4_count_weighted": 0.0,
+                "below_top1_count_weighted": 0.0,
                 "match_wins": 0,
                 "match_losses": 0,
                 "match_draws": 0,
@@ -66,6 +74,14 @@ def compute_core_stats(tournaments_df: pd.DataFrame, results_df: pd.DataFrame) -
         distinct_points = sorted(t_results["points"].unique(), reverse=True)
         top_points = distinct_points[0]
         second_points = distinct_points[1] if len(distinct_points) > 1 else None
+
+        # Approximate the number of Swiss rounds this tournament had as the
+        # highest total matches (wins+losses+draws) played by any single
+        # participant - byes aside, everyone plays the same number of
+        # rounds, so the max is a robust estimator.
+        rounds = int((t_results["wins"] + t_results["losses"] + t_results["draws"]).max())
+        difficulty_weight = round_difficulty_weight(rounds)
+        tournament_rounds[tid] = rounds
 
         for _, row in t_results.iterrows():
             m = ensure(row["player_name"])
@@ -84,10 +100,13 @@ def compute_core_stats(tournaments_df: pd.DataFrame, results_df: pd.DataFrame) -
 
             if is_top1:
                 m["top1_count"] += 1
+                m["top1_count_weighted"] += difficulty_weight
             if is_below1:
                 m["below_top1_count"] += 1
+                m["below_top1_count_weighted"] += difficulty_weight
             if is_top4:
                 m["top4_count"] += 1
+                m["top4_count_weighted"] += difficulty_weight
 
     for m in players.values():
         tp = m["tournaments_played"]
@@ -142,6 +161,9 @@ def compute_core_stats(tournaments_df: pd.DataFrame, results_df: pd.DataFrame) -
         m["win_rate_adj"] = shrink_rate(
             m["win_rate"] * tm, tm, league_win_rate, SHRINKAGE_K_MATCHES
         )
+
+        m["conf_tournaments"] = confidence_factor(tp, CONFIDENCE_REFERENCE_TOURNAMENTS)
+        m["conf_matches"] = confidence_factor(tm, CONFIDENCE_REFERENCE_MATCHES)
 
         m["score"] = compute_score(m)
 
