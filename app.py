@@ -60,6 +60,31 @@ MEASURE_LABELS = {
     "tournaments_played": "Tournaments played",
 }
 
+
+def build_measure_chart(df, measure_col, y_scale=None):
+    """Build a player-over-time line chart for the given measure column.
+
+    Pass y_scale=alt.Scale(...) to override the default (zero-based) y-axis
+    domain, e.g. to zoom in on a narrow range.
+    """
+    y_encoding = alt.Y(
+        f"{measure_col}:Q",
+        title=MEASURE_LABELS[measure_col],
+        scale=y_scale if y_scale is not None else alt.Undefined,
+    )
+    return (
+        alt.Chart(df)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("date:T", title="Tournament date"),
+            y=y_encoding,
+            color=alt.Color("player_name:N", title="Player"),
+            tooltip=["player_name", "date:T", f"{measure_col}:Q"],
+        )
+        .interactive()
+    )
+
+
 measure = st.sidebar.selectbox(
     "Chart measure",
     options=list(MEASURE_LABELS.keys()),
@@ -74,7 +99,8 @@ show_explanations = st.sidebar.checkbox("Show measure explanations", value=False
 st.header("🏆 Leaderboard")
 st.caption(
     f"Computed using only tournaments between **{date_from}** and **{date_to}** "
-    "(re-derived on the fly, not just a filtered snapshot)."
+    "(re-derived on the fly, not just a filtered snapshot). "
+    "Win rate counts draws as half a win."
 )
 
 tournaments_in_range = tournaments[
@@ -162,17 +188,7 @@ else:
     if plot_df.empty:
         st.info("Select at least one player to draw the chart.")
     else:
-        chart = (
-            alt.Chart(plot_df)
-            .mark_line(point=True)
-            .encode(
-                x=alt.X("date:T", title="Tournament date"),
-                y=alt.Y(f"{measure}:Q", title=MEASURE_LABELS[measure]),
-                color=alt.Color("player_name:N", title="Player"),
-                tooltip=["player_name", "date:T", f"{measure}:Q"],
-            )
-            .interactive()
-        )
+        chart = build_measure_chart(plot_df, measure)
         st.altair_chart(chart, use_container_width=True)
 
         # Always ALSO show Win rate over time, in addition to whatever
@@ -180,16 +196,21 @@ else:
         # rate itself, to avoid showing the exact same chart twice).
         if measure != "win_rate":
             st.subheader("📉 Win rate over time")
-            win_rate_chart = (
-                alt.Chart(plot_df)
-                .mark_line(point=True)
-                .encode(
-                    x=alt.X("date:T", title="Tournament date"),
-                    y=alt.Y("win_rate:Q", title=MEASURE_LABELS["win_rate"]),
-                    color=alt.Color("player_name:N", title="Player"),
-                    tooltip=["player_name", "date:T", "win_rate:Q"],
-                )
-                .interactive()
+
+            # Win rates for the selected players tend to cluster in a
+            # narrow band, so a 0-100% axis makes differences hard to see.
+            # Zoom the y-axis to the actual data range (with a margin)
+            # instead of always anchoring the bottom at 0.
+            win_rate_min = plot_df["win_rate"].min()
+            win_rate_max = plot_df["win_rate"].max()
+            margin = max((win_rate_max - win_rate_min) * 0.15, 0.02)
+            y_domain = [
+                max(win_rate_min - margin, 0.0),
+                min(win_rate_max + margin, 1.0),
+            ]
+
+            win_rate_chart = build_measure_chart(
+                plot_df, "win_rate", y_scale=alt.Scale(domain=y_domain)
             )
             st.altair_chart(win_rate_chart, use_container_width=True)
 
